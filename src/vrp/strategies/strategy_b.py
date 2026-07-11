@@ -82,7 +82,9 @@ def run_strategy_b(spx: pd.Series, vix: pd.Series,
     maturity_days:
         Time-to-expiry in calendar days at option open.
     tc_pct_of_premium:
-        Round-trip transaction cost as a fraction of premium collected.
+        Round-trip transaction cost as a fraction of the gross premium
+        traded (sum of both legs' premia for the spread variant), half
+        charged at open and half at close.
     r:
         Risk-free rate (annualized). Default 0.
 
@@ -113,9 +115,14 @@ def run_strategy_b(spx: pd.Series, vix: pd.Series,
     monthly_pnl = []
 
     for i, open_date in enumerate(month_start_dates):
-        close_date = (month_start_dates[i + 1]
-                      if i + 1 < len(month_start_dates) else idx[-1])
-        cycle_idx = idx[(idx >= open_date) & (idx < close_date)]
+        is_last = i + 1 >= len(month_start_dates)
+        close_date = (idx[-1] if is_last else month_start_dates[i + 1])
+        # Interior cycles end the day before the next month-open (which
+        # starts the next cycle); the final cycle includes the last day.
+        in_cycle = (idx >= open_date) & (
+            (idx <= close_date) if is_last else (idx < close_date)
+        )
+        cycle_idx = idx[in_cycle]
         if len(cycle_idx) < 2:
             continue
 
@@ -156,8 +163,12 @@ def run_strategy_b(spx: pd.Series, vix: pd.Series,
         #   (p_short_open - short_marks_t) + (long_marks_t - p_long_open)
         position_value = (p_short_open - short_marks) + (long_marks - p_long_open)
 
-        tc_open = cfg.tc_pct_of_premium * 0.5 * abs(premium_collected)
-        tc_close = cfg.tc_pct_of_premium * 0.5 * abs(premium_collected)
+        # Costs scale with the gross premium traded on each leg, not the
+        # net: a spread trades two options, and real bid/ask is paid on
+        # both. For the naked variant this reduces to the old behavior.
+        gross_premium = p_short_open + p_long_open
+        tc_open = cfg.tc_pct_of_premium * 0.5 * gross_premium
+        tc_close = cfg.tc_pct_of_premium * 0.5 * gross_premium
         position_value.iloc[0] -= tc_open
         position_value.iloc[-1] -= tc_close
 

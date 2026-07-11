@@ -7,8 +7,9 @@ proxy as the strategy).
 
 Net daily return = strategy_daily_return + hedge_daily_return, where
 both are expressed on the same capital base (K_short of the strategy's
-short put). The hedge's day-0 debit shows up as a small negative
-contribution on the cycle's opening bar.
+short put). The hedge PnL is marked relative to its purchase price, so
+a put that expires worthless costs exactly the premium spent over the
+cycle (no separate day-0 debit).
 
 Spec parameters:
     hedge_delta      = -0.05  (5-delta)
@@ -78,9 +79,12 @@ def add_tail_hedge(strategy_result: Dict[str, object],
                 marks.append(bs_price(S, K_hedge, T, sigma, r, "put"))
         marks_s = pd.Series(marks, index=cycle_idx)
 
+        # PnL relative to entry: qty * (mark_t - p_open). The premium paid
+        # is already embedded — a put expiring worthless ends the cycle at
+        # exactly -hedge_spend. (An earlier version additionally debited
+        # hedge_spend on day 0, double-charging every hedge.)
         pos_value = hedge_qty * (marks_s - p_hedge_open)
         daily_hedge_return = pos_value.diff().fillna(pos_value.iloc[0]) / K_short
-        daily_hedge_return.iloc[0] -= hedge_spend / K_short
 
         hedge_daily.loc[cycle_idx] = (hedge_daily.loc[cycle_idx].values
                                          + daily_hedge_return.values)

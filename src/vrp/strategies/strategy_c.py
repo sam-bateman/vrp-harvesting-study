@@ -1,9 +1,10 @@
 """Strategy C — conditional VRP harvester.
 
 Wraps Strategy B with a VRP-gated position sizing. On each month-open
-trading day, consult the VRP signal (IV_t - RV_t in vol points). If the
-signal is at or above the threshold, the Strategy B position for that
-month is taken; otherwise the month is held in cash (zero daily return).
+trading day, consult the most recent VRP value observable BEFORE that
+day (the prior month-end VRP, IV - RV in vol points). If the signal is
+at or above the threshold, the Strategy B position for that month is
+taken; otherwise the month is held in cash (zero daily return).
 
 Hypothesis (from Carr & Wu 2009, Bondarenko 2014): the VRP is time-
 varying, so avoiding low-VRP periods should improve risk-adjusted
@@ -52,13 +53,22 @@ def run_strategy_c(spx: pd.Series, vix: pd.Series, vrp: pd.Series,
     active_count = 0
     gated_positions = []
     for i, open_date in enumerate(month_start_dates):
-        close_date = (month_start_dates[i + 1]
-                       if i + 1 < len(month_start_dates) else aligned.index[-1])
-        cycle_idx = aligned.index[(aligned.index >= open_date)
-                                   & (aligned.index < close_date)]
+        is_last = i + 1 >= len(month_start_dates)
+        close_date = (aligned.index[-1] if is_last
+                      else month_start_dates[i + 1])
+        in_cycle = (aligned.index >= open_date) & (
+            (aligned.index <= close_date) if is_last
+            else (aligned.index < close_date)
+        )
+        cycle_idx = aligned.index[in_cycle]
         if len(cycle_idx) < 2:
             continue
-        vrp_history = vrp.loc[:open_date].dropna()
+        # Gate on the last VRP value strictly BEFORE the month-open day —
+        # i.e. the prior month-end signal. Slicing through open_date
+        # would consume a value only knowable at that day's close while
+        # entering at that same close (lookahead vs the spec's
+        # signal-at-t-trades-at-t+1 rule).
+        vrp_history = vrp[vrp.index < open_date].dropna()
         if len(vrp_history) == 0:
             daily_return.loc[cycle_idx] = 0.0
             gated_positions.append({"open_date": open_date, "vrp": None,

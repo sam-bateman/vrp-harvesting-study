@@ -35,6 +35,28 @@ def test_hedge_reduces_drawdown_on_crash():
     assert net_eq.loc[low_day] > strat_eq.loc[low_day]
 
 
+def test_hedge_worthless_expiry_costs_exactly_the_premium():
+    """Regression for the double-charged debit: on a flat underlying the
+    hedge decays to ~worthless, so each cycle's total hedge PnL must be
+    ~-hedge_spend (never ~-2x hedge_spend) on the K_short capital base."""
+    spx, vix = _synth_spx_vix(64)  # ~3 monthly cycles
+    strat = run_strategy_b(spx, vix, target_delta=-0.30,
+                            tc_pct_of_premium=0.0)
+    hedged = add_tail_hedge(strat, spx, vix,
+                             hedge_delta=-0.05, hedge_spend_pct=0.15)
+    legs = hedged["hedge_legs"].set_index("open_date")
+    positions = strat["positions"].set_index("open_date")
+    hedge_ret = hedged["hedge_daily_return"]
+    for open_date, leg in legs.iterrows():
+        close_date = positions.loc[open_date, "close_date"]
+        cycle = hedge_ret.loc[open_date:close_date - pd.Timedelta(days=1)]
+        total = cycle.sum() * positions.loc[open_date, "K_short"]
+        spend = leg["hedge_spend"]
+        # Within 25% of one premium (BS decay isn't exactly zero at the
+        # calendar-month close), and nowhere near two premia.
+        assert -1.25 * spend < total < -0.5 * spend
+
+
 def test_hedge_structure_keys():
     spx, vix = _synth_spx_vix(120)
     strat = run_strategy_b(spx, vix, target_delta=-0.30)
