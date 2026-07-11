@@ -1,8 +1,9 @@
 """Strategy C + tail-risk overlays comparison.
 
-Base strategy: Strategy C (spread variant, threshold = -2 vol points —
-the Phase 3 train-optimal). Applies each overlay individually and all
-three combined, reports train/test metrics and equity/drawdown figures.
+Base strategy: Strategy C (spread variant, threshold = +1 vol point —
+the Phase 3 train-optimal under prior-month-end gating). Applies each
+overlay individually and all three combined, reports train/test metrics
+and equity/drawdown figures.
 
 Outputs:
     reports/strategy_c_overlays/metrics.json
@@ -30,7 +31,7 @@ from vrp.util.vrp_signal import compute_vrp
 
 TRAIN_START, TRAIN_END = "2013-01-01", "2018-12-31"
 TEST_START,  TEST_END  = "2019-01-01", "2024-12-31"
-THRESHOLD = -2.0
+THRESHOLD = 1.0  # Phase 3 train-optimal (train-only selection)
 
 
 def _windowed(ret: pd.Series) -> dict:
@@ -76,7 +77,7 @@ def main() -> None:
     ret_combined = combined_hedged["net_daily_return"]
 
     results = {
-        "base_C_spread_thr=-2": _windowed(base_ret),
+        "base_C_spread_thr=+1": _windowed(base_ret),
         "+O1_regime_filter":    _windowed(ret_o1),
         "+O2_vol_scale_10pct":  _windowed(ret_o2),
         "+O3_tail_hedge_15pct": _windowed(ret_o3),
@@ -85,7 +86,7 @@ def main() -> None:
     (out_dir / "metrics.json").write_text(json.dumps(results, indent=2))
 
     eq = pd.DataFrame({
-        "base C(spread, thr=-2)": (1 + base_ret).cumprod(),
+        "base C(spread, thr=+1)": (1 + base_ret).cumprod(),
         "+O1 regime filter":       (1 + ret_o1).cumprod(),
         "+O2 vol scale":           (1 + ret_o2).cumprod(),
         "+O3 tail hedge":          (1 + ret_o3).cumprod(),

@@ -9,8 +9,9 @@ for the practical timescales of monthly-rebalance strategies.
 References:
 - Kunsch (1989) "The Jackknife and the Bootstrap for General Stationary
   Observations"
-- Politis, Romano (1994) "The Stationary Bootstrap" — alternative with
-  random block sizes; we use fixed-size MBB for simplicity.
+- Politis, Romano (1994) "The Stationary Bootstrap" — implemented in
+  ``stationary_bootstrap_paths`` as a robustness check on the MBB's
+  fixed block-size choice.
 """
 from __future__ import annotations
 
@@ -40,11 +41,51 @@ def bootstrap_paths(returns: pd.Series, block_size: int, n_paths: int,
     return paths
 
 
+def stationary_bootstrap_paths(returns: pd.Series, mean_block_size: int,
+                               n_paths: int, seed: int = 0) -> List[pd.Series]:
+    """Politis-Romano (1994) stationary bootstrap.
+
+    Blocks have geometric random lengths with the given mean and wrap
+    circularly, so no observation is underweighted and the resampled
+    series is stationary. Unlike fixed-block MBB, the random block
+    lengths avoid committing to a single dependence horizon — the
+    complement to the MBB's fixed ``block_size``.
+    """
+    rng = np.random.default_rng(seed)
+    values = returns.dropna().values
+    n = len(values)
+    if mean_block_size <= 0 or mean_block_size > n:
+        raise ValueError(
+            f"mean_block_size {mean_block_size} must be in (0, {n}]"
+        )
+    p = 1.0 / mean_block_size
+    paths = []
+    for _ in range(n_paths):
+        idx = np.empty(0, dtype=int)
+        while len(idx) < n:
+            start = rng.integers(0, n)
+            length = rng.geometric(p)
+            idx = np.concatenate([idx, (start + np.arange(length)) % n])
+        paths.append(pd.Series(values[idx[:n]]))
+    return paths
+
+
 def bootstrap_metrics(returns: pd.Series, block_size: int, n_paths: int,
-                      seed: int = 0) -> pd.DataFrame:
-    """Run bootstrap, compute summary metrics per simulated path."""
+                      seed: int = 0, method: str = "mbb") -> pd.DataFrame:
+    """Run bootstrap, compute summary metrics per simulated path.
+
+    method: "mbb" (fixed-size moving block) or "stationary"
+    (Politis-Romano, ``block_size`` is the mean block length).
+    """
+    if method == "mbb":
+        paths = bootstrap_paths(returns, block_size, n_paths, seed=seed)
+    elif method == "stationary":
+        paths = stationary_bootstrap_paths(returns, block_size, n_paths,
+                                           seed=seed)
+    else:
+        raise ValueError(f"unknown bootstrap method {method!r}")
     rows = []
-    for p in bootstrap_paths(returns, block_size, n_paths, seed=seed):
+    for p in paths:
         s = summary(p)
         rows.append({
             "ann_return": s["ann_return"],

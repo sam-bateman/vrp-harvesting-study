@@ -3,6 +3,7 @@ import pandas as pd
 
 from vrp.report.metrics import (
     sortino_ratio,
+    probabilistic_sharpe_ratio,
     max_drawdown,
     drawdown_series,
     drawdown_duration_days,
@@ -44,6 +45,32 @@ def test_sortino_positive_when_upside_dominates():
     rets = pd.Series(np.concatenate([up, down]))
     s = sortino_ratio(rets, target=0.0)
     assert s > 0
+
+
+def test_sortino_uses_full_sample_downside_deviation():
+    # Standard convention: downside deviation averages squared
+    # below-target deviations over ALL n observations.
+    rets = pd.Series([0.02, 0.02, 0.02, -0.01])
+    dd = np.sqrt((0.01 ** 2) / 4)      # one downside day out of four
+    expected = (rets.mean() / dd) * np.sqrt(252)
+    assert abs(sortino_ratio(rets) - expected) < 1e-9
+
+
+def test_psr_bounds_and_ordering():
+    rng = np.random.default_rng(3)
+    strong = pd.Series(rng.normal(0.001, 0.005, 2000))
+    weak = pd.Series(rng.normal(0.00005, 0.01, 2000))
+    p_strong = probabilistic_sharpe_ratio(strong)
+    p_weak = probabilistic_sharpe_ratio(weak)
+    assert 0.0 <= p_weak <= 1.0 and 0.0 <= p_strong <= 1.0
+    assert p_strong > 0.99
+    assert p_strong > p_weak
+
+
+def test_psr_negative_mean_below_half():
+    rng = np.random.default_rng(4)
+    losing = pd.Series(rng.normal(-0.001, 0.01, 2000))
+    assert probabilistic_sharpe_ratio(losing) < 0.5
 
 
 def test_distribution_stats_keys():

@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-import pytest
 
 from vrp.util.annualize import (
     TRADING_DAYS,
@@ -34,9 +33,18 @@ def test_sharpe_zero_rf():
     assert abs(s - mu_ann / sig_ann) < 1e-9
 
 
-def test_sharpe_with_rf():
-    rets = pd.Series([0.001] * 252)
-    s = sharpe_ratio(rets, rf=0.02)
-    with pytest.raises((ZeroDivisionError, ValueError, FloatingPointError)):
-        if np.isfinite(s):
-            raise ValueError("expected non-finite sharpe with zero vol")
+def test_sharpe_with_rf_subtracts_annual_rate():
+    rets = pd.Series(np.random.default_rng(2).normal(0.0005, 0.01, 5_000))
+    s0 = sharpe_ratio(rets, rf=0.0)
+    s2 = sharpe_ratio(rets, rf=0.02)
+    assert abs((s0 - s2) * ann_vol(rets) - 0.02) < 1e-9
+
+
+def test_sharpe_zero_vol_is_signed_infinite():
+    # All-zero returns give an exactly-zero std (constant nonzero series
+    # carry ~1e-19 float noise and never reach the degenerate branch).
+    flat = pd.Series([0.0] * 252)
+    assert sharpe_ratio(flat, rf=-0.02) == float("inf")
+    # Zero-vol with negative excess return is -inf, not nan: the sign
+    # of the excess return is known even when vol is degenerate.
+    assert sharpe_ratio(flat, rf=0.02) == float("-inf")

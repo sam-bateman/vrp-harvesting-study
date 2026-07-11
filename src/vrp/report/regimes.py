@@ -11,7 +11,7 @@ from typing import Dict, List
 
 import pandas as pd
 
-from .metrics import summary
+from .metrics import max_drawdown
 
 
 @dataclass(frozen=True)
@@ -42,11 +42,23 @@ def slice_regime(series: pd.Series, name: str) -> pd.Series:
 
 
 def regime_metrics(returns: pd.Series) -> Dict[str, Dict[str, float]]:
+    """Per-regime stats in window units — deliberately NOT annualized.
+
+    Annualizing a 20-40 day crisis window compounds a one-off event to a
+    full-year rate and reads as nonsense (-10% in a month "annualizes"
+    to -71%). Cumulative return over the window plus the worst day and
+    the window max drawdown is what a reader can actually interpret.
+    """
     out: Dict[str, Dict[str, float]] = {}
     for r in REGIMES:
-        window = returns.loc[r.start:r.end]
+        window = returns.loc[r.start:r.end].dropna()
         if len(window) == 0:
             out[r.name] = {"n_days": 0}
             continue
-        out[r.name] = {"n_days": len(window), **summary(window)}
+        out[r.name] = {
+            "n_days": len(window),
+            "cum_return": float((1 + window).prod() - 1),
+            "worst_day": float(window.min()),
+            "max_drawdown": max_drawdown(window),
+        }
     return out

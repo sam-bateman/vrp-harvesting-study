@@ -29,7 +29,16 @@ from vrp.util.vrp_signal import compute_vrp
 
 TRAIN_START, TRAIN_END = "2013-01-01", "2018-12-31"
 TEST_START,  TEST_END  = "2019-01-01", "2024-12-31"
-THRESHOLDS = [-2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+# NO_GATE is a real candidate in the selection: if gating never beats
+# the ungated strategy on train, the honest train-optimal choice is "no
+# gate", not the lowest threshold on the grid. (A large negative
+# threshold makes every month with signal history active.)
+NO_GATE = -1e9
+THRESHOLDS = [NO_GATE, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+
+
+def _threshold_label(t: float) -> str:
+    return "no_gate" if t == NO_GATE else f"{t:+.1f}"
 
 
 def _run(spx, vix, vrp, threshold, long_put_delta):
@@ -59,6 +68,7 @@ def main() -> None:
             s = summary(train)
             sweep[variant].append({
                 "threshold": t,
+                "threshold_label": _threshold_label(t),
                 "train_sharpe": s["sharpe"],
                 "train_ann_return": s["ann_return"],
                 "train_max_drawdown": s["max_drawdown"],
@@ -81,6 +91,7 @@ def main() -> None:
         test = result["daily_return"].loc[TEST_START:TEST_END]
         test_reports[variant] = {
             "chosen_threshold": t,
+            "chosen_threshold_label": _threshold_label(t),
             "train_summary": summary(train),
             "test_summary": summary(test),
             "active_fraction": result["active_months_fraction"],
@@ -92,12 +103,17 @@ def main() -> None:
     # ---- Plot train Sharpe curves -----------------------------------------
     fig, ax = plt.subplots(figsize=(10, 4))
     for variant, rows in sweep.items():
-        xs = [r["threshold"] for r in rows]
-        ys = [r["train_sharpe"] for r in rows]
+        finite = [r for r in rows if r["threshold"] != NO_GATE]
+        xs = [r["threshold"] for r in finite]
+        ys = [r["train_sharpe"] for r in finite]
         ax.plot(xs, ys, marker="o", label=variant)
+        no_gate = next(r for r in rows if r["threshold"] == NO_GATE)
+        ax.axhline(no_gate["train_sharpe"], linestyle=":", alpha=0.5,
+                   label=f"{variant} no-gate train Sharpe")
     for variant, t in chosen.items():
-        ax.axvline(t, linestyle="--", alpha=0.3,
-                    label=f"{variant} train-optimal: {t}")
+        if t != NO_GATE:
+            ax.axvline(t, linestyle="--", alpha=0.3,
+                       label=f"{variant} train-optimal: {t}")
     ax.set_xlabel("Threshold (vol points)")
     ax.set_ylabel("Train Sharpe")
     ax.set_title("Strategy C — train Sharpe as a function of VRP threshold")
@@ -107,9 +123,10 @@ def main() -> None:
     plt.close(fig)
 
     print(f"Strategy C sensitivity outputs written to {out_dir}")
-    print("Chosen thresholds (train-optimal):", chosen)
+    print("Chosen thresholds (train-optimal):",
+          {v: _threshold_label(t) for v, t in chosen.items()})
     for variant, block in test_reports.items():
-        print(f"\n{variant} at threshold={block['chosen_threshold']}:")
+        print(f"\n{variant} at threshold={block['chosen_threshold_label']}:")
         print(f"  active months: {block['active_fraction']:.2%}")
         print(f"  train Sharpe: {block['train_summary']['sharpe']:+.3f}  "
               f"MDD={block['train_summary']['max_drawdown']:+.3f}")

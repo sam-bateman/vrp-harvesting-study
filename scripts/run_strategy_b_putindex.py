@@ -21,6 +21,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 
+from vrp.data.benchmarks import load_rf_daily, load_spx_total_return
 from vrp.data.cboe_indices import load_cboe_index
 from vrp.data.spx import load_spx
 from vrp.report.metrics import summary, drawdown_series
@@ -34,11 +35,21 @@ def _daily_returns(series: pd.Series) -> pd.Series:
     return series.pct_change().dropna()
 
 
-def _alpha_beta(strategy_ret: pd.Series, bench_ret: pd.Series) -> dict:
-    aligned = pd.concat([strategy_ret, bench_ret], axis=1, join="inner").dropna()
-    aligned.columns = ["y", "x"]
-    x = aligned["x"].values
-    y = aligned["y"].values
+def _alpha_beta(strategy_ret: pd.Series, bench_ret: pd.Series,
+                rf_daily: pd.Series) -> dict:
+    """CAPM regression on daily EXCESS returns vs a total-return benchmark.
+
+    PUT is a total-return index, so the benchmark must be the S&P 500
+    Total Return index; regressing against price-only SPX overstates
+    alpha by roughly beta x dividend yield. Excess returns use the
+    13-week T-bill yield as the risk-free proxy.
+    """
+    aligned = pd.concat(
+        [strategy_ret.rename("y"), bench_ret.rename("x"),
+         rf_daily.rename("rf")], axis=1, join="inner",
+    ).dropna()
+    y = (aligned["y"] - aligned["rf"]).values
+    x = (aligned["x"] - aligned["rf"]).values
     x_mean, y_mean = x.mean(), y.mean()
     var_x = ((x - x_mean) ** 2).mean()
     cov_xy = ((x - x_mean) * (y - y_mean)).mean()
@@ -55,9 +66,12 @@ def main() -> None:
 
     put = load_cboe_index("PUT")
     spx = load_spx(start="2012-01-01")["close"]
+    spx_tr = load_spx_total_return(start="2012-01-01")
+    rf = load_rf_daily(start="2012-01-01")
 
     put_ret = _daily_returns(put)
     spx_ret = _daily_returns(spx)
+    spx_tr_ret = _daily_returns(spx_tr)
 
     train_put = put_ret.loc[TRAIN_START:TRAIN_END]
     test_put  = put_ret.loc[TEST_START:TEST_END]
@@ -68,10 +82,14 @@ def main() -> None:
         json.dumps(regime_metrics(test_put), indent=2, default=str)
     )
 
-    ab_train = _alpha_beta(train_put, spx_ret.loc[TRAIN_START:TRAIN_END])
-    ab_test  = _alpha_beta(test_put,  spx_ret.loc[TEST_START:TEST_END])
+    ab_train = _alpha_beta(train_put, spx_tr_ret.loc[TRAIN_START:TRAIN_END],
+                           rf.loc[TRAIN_START:TRAIN_END])
+    ab_test  = _alpha_beta(test_put,  spx_tr_ret.loc[TEST_START:TEST_END],
+                           rf.loc[TEST_START:TEST_END])
     (out_dir / "alpha_beta_vs_spx.json").write_text(
-        json.dumps({"train": ab_train, "test": ab_test}, indent=2)
+        json.dumps({"train": ab_train, "test": ab_test,
+                    "note": "excess daily returns vs ^SP500TR, rf=^IRX/252"},
+                   indent=2)
     )
 
     common_start = max(put_ret.index.min(), spx_ret.index.min(),

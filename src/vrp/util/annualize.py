@@ -42,5 +42,7 @@ def sharpe_ratio(daily_returns: pd.Series, rf: float = 0.0) -> float:
     mu = ann_return(daily_returns)
     sig = ann_vol(daily_returns)
     if sig is None or sig == 0 or np.isnan(sig):
-        return float("inf") if mu - rf > 0 else float("nan")
+        if np.isnan(sig) or np.isnan(mu):
+            return float("nan")
+        return float("inf") if mu - rf > 0 else float("-inf")
     return (mu - rf) / sig
