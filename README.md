@@ -5,55 +5,95 @@ harvesting on SPX, with explicit tail-risk accounting. Framed as a
 comparative study of known strategies, not a novel-alpha claim. Primary
 audience: readers evaluating quantitative research work.
 
-## Abstract (Phase 1)
+## Abstract
 
-Phase 1 implements the naive baseline: a dollar-neutral short-front /
-long-second VIX futures calendar spread with a 5-day pre-expiry roll, 1 bp
-per-leg transaction cost on roll days, trained on 2013–2018 and evaluated
-out-of-sample on 2019–2024. Both windows contain a major short-vol
-blow-up event (Feb 2018 Volmageddon in train; COVID 2020 and the 2022
-bear in test). The naive baseline **loses 12–15% annualized with ~60%
-maximum drawdown** in both windows. The cross-correlation of daily
-Strategy A returns with negative-VXX returns is 0.61 (as expected for a
-VIX-shape trade), confirming the engine is directionally sound — the
-negative cumulative PnL is a structural property of the naive
-construction, not an implementation bug. This result motivates
-Strategies B and C in subsequent phases.
+The study implements (A) a dollar-neutral VIX-futures calendar spread
+with a 5-trading-day pre-expiry roll, (B) systematic SPX put-writing —
+the published CBOE PUT index plus a Black-Scholes synthetic replication
+and a put-spread variant — and (C) a VRP-signal-gated version of B, then
+subjects every construction to bootstrap, VaR/ES, and an October-1987
+stress test. Training window 2013–2018, test window 2019–2024, no
+test-window tuning.
 
-## Why the naive baseline fails
+Headline results after a full engine audit (see the revision note):
 
-Dollar-neutral calendar P&L per day reduces algebraically to
-`r_second − r_front`, where `r` is the daily return of each leg. This is
-a *shape* trade, not a *carry* trade: it profits when the term structure
-steepens and loses when it flattens or inverts. The positive roll drift
-that makes outright short-VIX trades (short VXX, short-front calendar,
-etc.) profitable over time is cancelled out by the dollar-neutral
-construction. What remains is:
+- **Strategy A (short front / long second)** earns test Sharpe **+0.88**
+  (train +0.07) with a ~20% max drawdown and a −29.5% single-day 1987
+  stress loss. The carry is real but tail-dominated and extremely
+  window-dependent.
+- **Strategy B put-spread** (−0.30Δ short / −0.10Δ long) is the most
+  robust construction: test Sharpe **+0.54**, max drawdown −9%,
+  full-sample probabilistic Sharpe ratio 0.997, 1987 stress loss capped
+  at −3.3% of capital.
+- **The VRP gate (Strategy C) and all three tail-risk overlays fail to
+  add out-of-sample value** once look-ahead bugs are removed. The
+  train-optimal gate underperforms the ungated spread out of sample,
+  and the VIX regime filter — which looked like a large improvement
+  under a one-day signal leak — destroys performance when applied
+  tradeably.
 
-- ≈zero expected daily return during quiet contango (both legs decay at
-  similar rates per $ notional)
-- large negative realizations during vol spikes (front responds more
-  than second → `r_second − r_front` strongly negative)
+The strongest honest claim this study supports: **a hedged put-spread
+writer captures a modest, statistically credible premium; everything
+fancier that was tried failed to improve it out of sample.**
 
-Accumulated over 11 years including 2015, 2018, 2020, and 2022, the
-tails dominate and the strategy bleeds.
+## Revision note (engine audit)
 
-This is the same result academics have documented for naive calendar
-short-vol trades; see Alexander & Korovilas (2013) for a direct
-treatment. The finding motivates two subsequent phases: (i) Strategy B,
-a cash-secured put-writing variant that captures the VRP directly rather
-than via a calendar shape, and (ii) Strategy C, a conditional variant
-that gates exposure on a VRP-threshold signal.
+An earlier revision of this study reported materially different
+results. A code audit found five defects, each fixed in the current
+engine; the git history preserves the originals. In severity order:
+
+1. **VX contract-splice PnL (Strategy A).** The continuous front/second
+   series switched contracts at expiry, and daily PnL was computed by
+   differencing the spliced series — booking the front/second calendar
+   gap as phantom PnL once a month. In contango this systematically
+   penalized the short-front direction. The corrected engine computes
+   every daily return within a single contract and rolls the held pair
+   5 trading days before expiry. **This inverted the study's original
+   Phase 1 conclusion**: the spec's short-front direction, previously
+   reported as losing 12–15%/yr, is the profitable one; the "flipped"
+   long-front direction, previously celebrated, loses.
+2. **Regime-filter look-ahead (Overlay 1).** The filter zeroed day-t
+   returns using day-t closing values — an exit that would require
+   trading at the previous close. Because the first day VIX crosses 30
+   is systematically among the worst days for a short-vol book, the
+   leak deleted exactly the crash days and accounted for more than the
+   overlay's entire published improvement (test Sharpe +1.03 with the
+   leak, +0.26 without).
+3. **Missing contracts from holiday expiries.** The VX settlement rule
+   ignored exchange holidays, so four mid-sample contracts (Mar 2014,
+   Mar 2019, Mar 2022, Jun 2024) failed to download and the series
+   silently promoted the next month to front. Early 2013 was also
+   missing (the CDN publishes Settle=0 with the real mark in Close
+   before 2013-05-20). Both fixed; the loader now hard-errors on any
+   in-window gap.
+4. **Tail-hedge double-charge (Overlay 3).** The hedge debit was
+   subtracted on top of marks that already embedded it, so each hedge
+   cost twice its premium. Overlay 3 is still a net drag, but roughly
+   half the originally reported size.
+5. **Same-day VRP gating (Strategy C).** The gate consumed the VRP of
+   the month-open day itself (knowable only at that day's close) while
+   entering at that same close. It now gates on the prior month-end
+   value, as the methodology always claimed.
+
+Smaller corrections: option transaction costs are charged on both legs
+of the spread (gross premium, not net); the 1987 stress prices the
+delta-targeted strikes the strategy actually trades (the old hardcoded
+K=95/85 overstated the spread's stress loss ~2.6×); PUT-index alpha is
+regressed on total-return SPX with a T-bill risk-free rate (price-only
+SPX flattered alpha by ~2%/yr); Sortino uses the standard full-sample
+downside deviation; crisis-window tables report window returns instead
+of annualizing 20-day episodes.
 
 ## Strategies
 
-- **Strategy A — VIX Term-Structure Carry (naive baseline).**
-  Dollar-neutral short front-month VX, long second-month VX. Rolled 5
-  trading days before expiry. **(Implemented in Phase 1.)**
+- **Strategy A — VIX Term-Structure Carry.** Dollar-neutral short
+  front-month VX, long second-month VX, rolled 5 trading days before
+  expiry. Captures `(r_second − r_front) / 2` per day on gross capital.
 - **Strategy B — Systematic Put-Writing.** Monthly −0.30Δ SPX puts,
-  cash-secured; benchmarked against CBOE PUT index. *(Phase 2.)*
-- **Strategy C — Conditional VRP Harvester.** Strategy B, gated on
-  `VRP_t = IV_t − RV_t > threshold`. *(Phase 3.)*
+  cash-secured; benchmarked against the CBOE PUT index. Spread variant
+  buys a −0.10Δ wing.
+- **Strategy C — Conditional VRP Harvester.** Strategy B, gated on the
+  prior month-end `VRP_t = IV_t − RV_t ≥ threshold`.
 
 Overlays (applied to C in Phase 4): VIX regime filter, realized-vol
 position scaling, tail-hedge spend.
@@ -67,461 +107,386 @@ position scaling, tail-hedge spend.
 - Dew-Becker, Giglio, Le, Rodriguez (2017). The Price of Variance Risk.
 - Israelov & Nielsen (2015). Covered Calls Uncovered (AQR).
 - Bondarenko (2014). Why Are Put Options So Expensive?
+- Bailey & López de Prado (2012). The Sharpe Ratio Efficient Frontier
+  (probabilistic Sharpe ratio).
+- Politis & Romano (1994). The Stationary Bootstrap.
 
 ## Data
 
-- SPX, VIX spot: Yahoo Finance (`^GSPC`, `^VIX`).
+- SPX, VIX spot: Yahoo Finance (`^GSPC`, `^VIX`); `^SP500TR` and `^IRX`
+  for total-return benchmark and risk-free rate.
 - VIX futures (VX) settlements: CBOE CDN per-contract historical CSVs
   at `cdn.cboe.com/data/us/futures/market_statistics/historical_data/`.
-  Coverage is 2013-present; pre-2013 contracts return HTTP 403.
+  Coverage 2013-present; pre-2013 contracts return HTTP 403. Expiries
+  are holiday-adjusted (CFE rule); early-2013 files carry the mark in
+  Close with Settle=0.
 - CBOE benchmark indices (PUT, BXM): CBOE daily CSVs.
 
 ## Methodology notes
 
 - Train 2013-01-01 → 2018-12-31. Test 2019-01-01 → 2024-12-31.
-- The original spec targeted 2006 onward. CBOE per-contract VX history
-  begins in 2013, which forced the reduction. The 2013+ window still
-  contains sufficient regime variety (2015 flash crash, 2018
-  Volmageddon, 2020 COVID, 2022 bear) for a meaningful test.
-- No test-window parameter tuning.
-- Transaction costs: 1 bp per leg per VX roll (baseline). Sensitivity
-  sweep 5-30 bps is deferred to the Phase 1 robustness pass.
-- Annualization: 252 trading days throughout.
+- The original spec targeted 2006 onward with train 2006–2016 / test
+  2017–2024, which places Feb 2018 and Mar 2020 in the test set. CBOE
+  per-contract VX history begins in 2013, forcing the reduction — and
+  **moving Feb 2018 (Volmageddon) into the training window**, a
+  deviation from the spec's stated requirement that the test set
+  contain it. The test window retains COVID 2020 and the 2022 bear;
+  the train window retains 2015 and Feb 2018.
+- No test-window parameter tuning. Signals computed through day t
+  trade no earlier than the close of day t; anything derived from day
+  t's close applies to day t+1's return.
+- Transaction costs: 1 bp per leg per VX roll event (4 legs trade per
+  roll). Options: 5% of gross premium round-trip (both legs of a
+  spread), half at open, half at close. Sensitivity sweep 1–30 bps for
+  Strategy A below.
+- Annualization: 252 trading days. Sharpe = geometric annualized
+  return / annualized vol — slightly more conservative than the
+  arithmetic convention (mean×252 / std×√252) for volatile series;
+  applied uniformly, including to bootstrap paths.
+- Bootstrap and VaR/ES in Phase 5 use the **full 2013–2024 sample**
+  (labelled full-sample, not train or test).
 
-## Reproduce Strategy A
+## Reproduce
 
 ```bash
 pip install -e '.[dev]'
 python scripts/run_strategy_a.py
 python scripts/sanity_vxx.py
+python scripts/run_strategy_a_sweep.py
+python scripts/run_strategy_b_putindex.py
+python scripts/run_strategy_b_synthetic.py
+python scripts/run_strategy_b_spread.py
+python scripts/run_strategy_c.py
+python scripts/run_strategy_c_sensitivity.py
+python scripts/run_strategy_c_overlays.py
+python scripts/run_tail_risk.py
 ```
 
-Outputs land in `reports/strategy_a/` (gitignored — regenerate from
-source). `notebooks/01_strategy_a.ipynb` regenerates the same figures
-interactively.
+Outputs land in `reports/` (gitignored — regenerate from source).
 
 ## Sanity-check gate
 
-The daily-return correlation between Strategy A and `−VXX` is required
-to fall in `[0.3, 0.7]`. Correlation outside this band indicates either
-a sign bug in the VX PnL computation or a data-ingestion issue. At
-Phase 1 completion: **0.609** (in-band).
+The daily-return correlation between Strategy A (short-front) and
+`−VXX` is required to fall in `[0.5, 0.9]` — the splice-free
+held-contract construction shares its dominant leg with −VXX, so the
+correlation runs higher than the loosely-related shape trade the old
+engine produced. Current value: **0.777** (in-band). A negative or
+sub-0.3 correlation indicates a sign bug in the VX PnL computation or
+a data-ingestion issue.
 
-## Phase 1 results
+## Phase 1 results — Strategy A
 
-### Spec-direction baseline (short front / long second)
+### Spec-direction baseline (short front / long second, 1 bp per leg)
 
-| window | Sharpe | ann. return | ann. vol | max DD | DD duration |
-|---|---|---|---|---|---|
-| train (2013-2018) | −0.74 | −14.7% | 19.9% | −59.6% | 1415 days |
-| test (2019-2024)  | −0.60 | −11.7% | 19.5% | −58.2% | 1438 days |
+| window | Sharpe | ann. return | ann. vol | max DD | DD duration | skew |
+|---|---|---|---|---|---|---|
+| train (2013-2018) | +0.07 | +1.0% | 13.3% | −22.9% | 354 days | −3.4 |
+| test (2019-2024)  | +0.88 | +11.6% | 13.2% | −19.7% | 362 days | −1.5 |
 
-Both Sharpe numbers are negative. The VXX correlation gate (0.609)
-confirms the engine is directionally consistent with a short-VIX
-construction; the negative cumulative PnL is the structural dollar-
-neutral-calendar property described above, not an implementation bug.
+The spec's short-front calendar is a carry trade: the front month
+decays proportionally faster than the second in contango, and the
+short-front leg collects that differential. The train window is nearly
+flat because Feb 2018 (front VX +113% in a day) and the 2015 spike
+land inside it; the test window's steep contango regimes (2019,
+2021, 2023–24) deliver the +0.88. **The 12-year gap between the two
+windows is the honest headline: this trade's realized Sharpe is
+regime-dependent to the point that six years of data can show either
+~0 or ~0.9.**
 
-### Direction-flip comparison
-
-The spec's "short front / long second" direction is the same calendar
-rotated; flipping it produces a genuinely different PnL profile. The
-baseline captures `r_second − r_front`; the flipped variant captures
-`r_front − r_second`. On the full sample, **the flipped direction is
-the profitable one**:
+### Direction comparison
 
 | variant | train Sharpe | test Sharpe | train ret | test ret | train MDD | test MDD |
 |---|---|---|---|---|---|---|
-| short front / long second (spec) | −0.74 | −0.60 | −14.7% | −11.7% | −60% | −58% |
-| **long front / short second** | **+0.60** | **+0.43** | **+11.9%** | **+8.3%** | **−15%** | **−17%** |
+| **short front / long second (spec)** | **+0.07** | **+0.88** | +1.0% | +11.6% | −23% | −20% |
+| long front / short second (flipped) | −0.24 | −0.94 | −3.2% | −12.4% | −35% | −58% |
 
-Mechanically, the flipped variant captures a small daily positive drift
-because front-month VX decays *proportionally faster* than second-month
-VX in quiet contango (`r_front` is more negative per $ than `r_second`),
-while the vol-spike losses that savage the baseline are much smaller on
-the long-front side because the short-second leg absorbs the majority
-of the spike. This means the commonly-taught "short front / long second
-calendar carries the VIX term structure" framing — which is the spec's
-framing — is wrong in sign.
+The mirror direction loses the carry and keeps the (mirrored) tail.
+An earlier revision of this study reported the opposite ordering; that
+result was an artifact of the contract-splice bug (revision note #1)
+and is retracted. The naive quant-retail framing — "short the front,
+collect the roll-down" — survives correct accounting.
 
-This is the most useful Phase 1 finding: naïve quant-retail intuition
-about the VIX calendar has the sign backwards, and a simple replication
-reveals it out of sample. Phase 2 (Strategy B put-writing) will sit
-alongside the flipped direction as the other candidate workable
-construction.
+### Transaction-cost sensitivity (spec direction)
 
-### Transaction-cost sensitivity
-
-Sweep of `tc_bps_per_roll` ∈ {1, 5, 10, 20, 30} for the spec baseline:
-
-| tc (bps) | train Sharpe | test Sharpe | train MDD | test MDD |
+| tc (bps/leg/roll) | train Sharpe | test Sharpe | train MDD | test MDD |
 |---|---|---|---|---|
-| 1  | −0.74 | −0.60 | −60% | −58% |
-| 5  | −0.80 | −0.66 | −63% | −61% |
-| 10 | −0.87 | −0.73 | −66% | −65% |
-| 20 | −1.01 | −0.88 | −72% | −71% |
-| 30 | −1.14 | −1.02 | −77% | −76% |
+| 1  | +0.07 | +0.88 | −23% | −20% |
+| 5  | −0.00 | +0.80 | −24% | −20% |
+| 10 | −0.09 | +0.70 | −25% | −20% |
+| 20 | −0.26 | +0.50 | −27% | −20% |
+| 30 | −0.43 | +0.31 | −34% | −21% |
 
-The result is monotone in costs as expected. The delta between 1 bp and
-30 bps is ~0.4 Sharpe points — real, but smaller than the ~1.3 Sharpe
-gap between the spec direction and the flipped direction at 1 bp. Costs
-are not the primary driver of the negative result; the construction is.
+Monotone in costs, as expected. At realistic institutional slippage
+(1–5 bps) the test-window result survives; at 30 bps the training
+window is deeply negative and the test window marginal — cost
+assumptions matter more here than for the option strategies, because
+the calendar trades 4 legs every month.
 
-## Phase 2 — Strategy B Results
-
-Phase 2 implements the put-writing leg of the study along three tracks:
-(i) the published CBOE PUT index as the canonical backtest, (ii) a
-Black-Scholes-based synthetic put-writer for pedagogical replication and
-pipeline validation, and (iii) a put-spread variant layered on the
-synthetic engine.
+## Phase 2 — Strategy B results
 
 ### CBOE PUT index (canonical, published)
 
-Monthly at-the-money cash-secured puts on SPX, executed per CBOE's PUT
-index methodology. The PUT series already bakes in realistic execution
-and transaction costs.
-
-| window | Sharpe | ann. return | ann. vol | max DD | α vs SPX (ann.) | β vs SPX |
+| window | Sharpe | ann. return | ann. vol | max DD | α vs SPX-TR (ann.) | β |
 |---|---|---|---|---|---|---|
-| train (2013-2018) | **+0.68** | 6.1% | 9.1% | −15.5% | −0.2% | 0.64 |
-| test  (2019-2024) | **+0.70** | 9.9% | 14.1% | −28.9% | +0.4% | 0.62 |
+| train (2013-2018) | **+0.68** | 6.1% | 9.1% | −15.5% | −1.8% | 0.64 |
+| test  (2019-2024) | **+0.70** | 9.9% | 14.1% | −28.9% | −1.6% | 0.62 |
 
-Beta to SPX sits around 0.6 in both windows — the characteristic
-put-write risk profile (captures most of equity upside, absorbs most of
-equity downside). Annualized alpha is at the noise level, consistent
-with the VRP literature: put-writing delivers a *different risk profile*
-than SPX, not systematic alpha.
+Alpha is regressed on daily excess returns versus the S&P 500 **total
+return** index with a T-bill risk-free rate. It is mildly negative in
+both windows — put-writing delivers a different risk profile than
+equities (β ≈ 0.6, upside-capped, crash-exposed), not CAPM alpha. An
+earlier revision reported ≈0 alpha against price-only SPX; dividends
+account for the difference. This is consistent with Israelov & Nielsen
+(2015): option-writing returns are largely equity beta plus the
+volatility risk premium, and the VRP portion shows up in the improved
+Sharpe (0.70 vs SPX-TR's drawdown-heavier path), not in alpha.
 
 ### Synthetic Black-Scholes put-writer (replication)
 
-Monthly −0.30Δ short put using VIX as a 30-day ATM IV proxy, 5 bp
-round-trip transaction cost as a fraction of premium.
+Monthly −0.30Δ short put, VIX as the 30-day ATM IV proxy, 5% of gross
+premium round-trip costs.
 
 | window | Sharpe | ann. return | max DD | monthly corr vs PUT |
 |---|---|---|---|---|
 | train | +0.65 | 4.7% | −15.7% | **0.825** ✓ |
-| test  | +0.28 | 3.2% | −26.5% | ″ |
+| test  | +0.28 | 3.1% | −26.5% | ″ |
 
 **Sanity gate passes** (monthly correlation 0.825 ≥ 0.6). The synthetic
-engine tracks the PUT index in shape and timing; the 2013-2018 numbers
-are close to PUT's. In 2019-2024 the synthetic underperforms — this is
-consistent with the documented approximations (VIX as ATM IV proxy over-
-estimates during crashes, calendar-month cycles vs third-Friday expiries
-misalign event timing around COVID). The engine is a replication
-artifact, not the primary deliverable; the PUT index is.
+engine tracks the PUT index in shape and timing; 2019-2024
+underperformance is consistent with the documented approximations (VIX
+overstates ATM IV in crashes; calendar-month cycles misalign expiry
+timing around COVID). The engine is a replication artifact; the PUT
+index is the primary deliverable.
 
 ### Put-spread variant (short −0.30Δ / long −0.10Δ)
 
-Spread truncates the left tail at the bought-put strike, at the cost of
-a smaller net premium:
-
 | variant | train Sharpe | test Sharpe | train ret | test ret | train MDD | test MDD |
 |---|---|---|---|---|---|---|
-| naked  | +0.65 | +0.28 | 4.7% | 3.2% | −15.7% | −26.5% |
-| **spread** | **+1.26** | **+0.60** | 4.1% | 2.9% | **−4.0%** | **−9.0%** |
+| naked  | +0.65 | +0.28 | 4.7% | 3.1% | −15.7% | −26.5% |
+| **spread** | **+1.22** | **+0.54** | 4.0% | 2.6% | **−4.1%** | **−9.2%** |
 
-Spread is the unambiguous winner on the synthetic engine. For ~0.3-0.4%
-less annualized return, it cuts max drawdown by a factor of ~3–4 and
-roughly doubles Sharpe in both windows. A portfolio allocator would
-trivially prefer the spread. This is the Phase 2 headline: the put-
-spread construction is the strongest single-trade variant identified
-so far in the study, and it is now the natural input for the Phase 4
-meta-allocation layer.
+The spread gives up ~0.5–0.7% of annualized return for a 3× smaller
+max drawdown and roughly double the Sharpe in both windows. Costs are
+charged on both legs (5% of gross premium round-trip). This is the
+strongest single construction in the study.
 
 ### Strategy A vs Strategy B side-by-side (test window, 2019-2024)
 
-| strategy | Sharpe | ann. return | max DD |
-|---|---|---|---|
-| Strategy A — short front / long second (spec) | −0.60 | −11.7% | −58% |
-| Strategy A — long front / short second (flipped) | +0.43 | 8.3% | −17% |
-| Strategy B — PUT index (canonical) | +0.70 | 9.9% | −29% |
-| Strategy B — synthetic spread (−0.30 / −0.10) | +0.60 | 2.9% | −9% |
+| strategy | Sharpe | ann. return | max DD | 1987 stress |
+|---|---|---|---|---|
+| Strategy A — short front / long second | +0.88 | 11.6% | −20% | −29.5% |
+| Strategy B — PUT index (canonical) | +0.70 | 9.9% | −29% | n/a |
+| Strategy B — synthetic spread | +0.54 | 2.6% | −9% | −3.3% |
 
-Both "working" constructions — flipped VX calendar and put-spread writer
-— land in the same Sharpe band (0.4–0.7) with different drawdown
-profiles. The VX calendar's 17% MDD comes from term-structure inversion
-events; the put-spread's 9% MDD comes from the long-put capping tail
-risk. They are different hedges for different failure modes, which is
-exactly what makes them good candidates to combine in Phase 4.
+Strategy A posts the best test-window Sharpe but carries the deepest
+tail (a third of capital in a 1987-style day, and a flat-to-negative
+training window). The spread is the only construction whose worst-case
+single day is survivable by construction rather than by luck.
 
-## Reproduce Strategy B
+## Phase 3 — Strategy C results
 
-```bash
-python scripts/run_strategy_b_putindex.py
-python scripts/run_strategy_b_synthetic.py
-python scripts/run_strategy_b_spread.py
-```
-
-## Phase 3 — Strategy C Results
-
-Strategy C gates Strategy B on a VRP signal `VIX_t − RV20_t` (vol
-points), taking a position in month `N+1` only when the month-end VRP
-of month `N` is at or above a threshold. The hypothesis (Carr-Wu,
-Bondarenko, Dew-Becker): the VRP is time-varying, so avoiding low-VRP
-months should improve risk-adjusted returns even at the cost of lower
-total premium.
+Strategy C gates Strategy B on the **prior month-end** VRP signal
+`VIX − RV20` (vol points): a position is taken in month N+1 only when
+month N's closing VRP is at or above the threshold.
 
 ### Spec-default baseline (threshold = 2 vol points)
 
-Gates roughly 26% of months.
+Gates ~27% of months.
 
 | variant | gating | train Sharpe | test Sharpe | train MDD | test MDD | active % |
 |---|---|---|---|---|---|---|
 | naked  | off (B) | +0.65 | +0.28 | −15.7% | −26.5% | 100% |
-| naked  | on  (C) | +0.75 | +0.30 | −7.4%  | −26.5% | 74%  |
-| spread | off (B) | +1.26 | +0.60 | −4.1%  | −9.0%  | 100% |
-| spread | on  (C) | +1.11 | **+0.72** | −2.7% | −9.1%  | 74%  |
-
-Spread + gating at the spec-default threshold jumps test Sharpe from
-0.60 to 0.72 while leaving max drawdown roughly unchanged — a
-meaningful out-of-sample improvement at a small in-sample Sharpe cost.
+| naked  | on  (C) | +0.73 | +0.27 | −7.4%  | −26.5% | 73%  |
+| spread | off (B) | +1.22 | +0.54 | −4.1%  | −9.2%  | 100% |
+| spread | on  (C) | +1.08 | +0.62 | −2.2%  | −9.1%  | 73%  |
 
 ### Threshold sensitivity (train-then-test)
 
-Swept thresholds in `[-2, -1, 0, 1, 2, 3, 4, 5, 6]` vol points on
-2013-2018 only; picked the train-maximizing Sharpe per variant; then
-evaluated the test window (2019-2024) **once** at that threshold.
+Thresholds swept over `{no gate, −2 … +6}` vol points on 2013-2018
+only — **"no gate" is an explicit candidate**, so the selection cannot
+manufacture a gate where none is warranted. The train-maximizing choice
+per variant is then evaluated once on 2019-2024.
 
-| variant | train-optimal threshold | train Sharpe @ chosen | test Sharpe @ chosen | test MDD |
+| variant | train-optimal | train Sharpe @ chosen | test Sharpe @ chosen | ungated test Sharpe |
 |---|---|---|---|---|
-| naked  | +1.0 vp | +0.78 | +0.31 | −26.5% |
-| spread | −2.0 vp | +1.24 | **+0.81** | −8.5%  |
+| naked  | +1.0 vp | +0.83 | +0.21 | +0.28 |
+| spread | +1.0 vp | +1.21 | +0.49 | **+0.54** |
 
-For the **spread variant**, training Sharpe is monotonically decreasing
-in threshold. The train-optimal is at the bottom of the sweep
-(threshold = −2 vol points, active ~90% of months — effectively a light
-tail filter that removes only the most deeply-negative-VRP months).
-This makes structural sense: the spread already has a long-put hedge
-absorbing the left tail, so aggressive VRP-gating loses more premium
-than it saves. Even so, the held-out test Sharpe improves from 0.60
-(ungated) to **0.81** at the train-optimal threshold — a clean
-out-of-sample gain from a minimal filter.
-
-For the **naked variant**, training Sharpe is hump-shaped and peaks
-around threshold = +1 vol point (active ~81% of months). The test-
-window improvement over ungated Strategy B is small (+0.31 vs +0.28).
-Naked puts benefit from some gating but the signal is weaker
-out-of-sample than for the spread.
+Train Sharpe is hump-shaped with a peak at +1 vol point for both
+variants, beating no-gate in-sample (spread: 1.21 vs 1.18). Out of
+sample the ordering reverses: **the train-selected gate underperforms
+the ungated strategy for both variants.**
 
 ### Verdict
 
-The VRP signal adds value, and it adds more value when combined with
-the spread's structural tail hedge. For the spread construction, the
-lightest filter wins: even filtering only the bottom ~10% of months by
-VRP bumps out-of-sample Sharpe from 0.60 to 0.81 with a 10% drop in
-active exposure. For the naked construction, a modest filter
-(~20% of months gated) helps slightly. Neither variant benefits from
-heavy gating — the premium lost dominates the risk saved.
+The VRP gate does not survive honest evaluation. It reduces training
+drawdowns (it is, mechanically, a way to skip some months) but the
+premium it forfeits exceeds the losses it avoids out of sample. An
+earlier revision reported test Sharpe 0.81 for a gated spread; that
+number rested on gating with the month-open day's own closing VRP (a
+same-day leak) and on selecting a grid-boundary threshold that the
+ungated strategy beat in train. Both defects are fixed, and the honest
+conclusion is negative. Phase 4 nevertheless applies the overlays to
+C(spread, thr=+1) — the train-selected configuration — because
+test-window information cannot be used to re-select the base.
 
-The strongest single construction in the study so far is
-**spread + light VRP gate**: test Sharpe +0.81, max DD −8.5%, 90%
-capital utilization. That is the natural input for the Phase 4 meta-
-allocation layer alongside the flipped VX calendar.
-
-## Reproduce Strategy C
-
-```bash
-python scripts/run_strategy_c.py                 # threshold=2 baseline
-python scripts/run_strategy_c_sensitivity.py     # train-then-test sweep
-```
-
-## Phase 4 — Tail-Risk Overlays
+## Phase 4 — Tail-risk overlays
 
 Three overlays from the project spec, applied to Strategy C (spread,
-threshold = −2 vol points — the Phase 3 train-optimal). Parameters are
-pinned to the spec, not tuned on this data.
+threshold +1 — the Phase 3 train-optimal). Parameters pinned to the
+spec, not tuned. The regime filter trades at t+1: a stress close
+triggers exit at the next session's close, so the trigger day's loss is
+taken, as it would be live.
 
-- **Overlay 1 — VIX regime filter.** Cash out when VIX > 30 or VX term
-  structure inverts (front > second). Re-enter after 7 consecutive calm
-  days (VIX < 25 and front < second).
-- **Overlay 2 — Realized-vol position scaling.** Scale daily returns by
-  `min(1, 0.10 / rv_20)` of the strategy's own returns. Target 10%
-  annualized vol, no upsizing above 1.0×.
-- **Overlay 3 — Tail-hedge spend.** Spend 15% of premium collected each
-  cycle on a 5-delta 1-month SPX put; mark daily.
+- **Overlay 1 — VIX regime filter.** Cash out when VIX > 30 or the VX
+  term structure inverts; re-enter after 7 consecutive calm days.
+- **Overlay 2 — Realized-vol position scaling.** Scale by
+  `min(1, 0.10 / rv20)` of the strategy's own trailing vol (lagged).
+- **Overlay 3 — Tail-hedge spend.** 15% of premium on a 5Δ 1-month put.
 
 | configuration | train Sharpe | test Sharpe | train MDD | test MDD |
 |---|---|---|---|---|
-| base C(spread, thr=−2) | +1.24 | +0.81 | −2.7% | −8.5% |
-| + O1 regime filter      | +0.98 | **+1.03** | −2.8% | **−2.5%** |
-| + O2 vol scale 10%      | +1.24 | +0.84 | −2.7% | −8.0% |
-| + O3 tail hedge 15%     | +0.54 | +0.17 | −5.9% | −12.8% |
-| all three combined      | +0.12 | +0.00 | −8.1% | −15.7% |
+| base C(spread, thr=+1) | +1.21 | +0.49 | −2.2% | −9.1% |
+| + O1 regime filter      | +0.22 | +0.26 | −4.7% | −4.4% |
+| + O2 vol scale 10%      | +1.21 | +0.51 | −2.2% | −8.6% |
+| + O3 tail hedge 15%     | +0.70 | +0.21 | −5.9% | −13.0% |
+| all three combined      | +0.05 | −0.01 | −7.3% | −14.1% |
 
 ### Verdict
 
-**Overlay 1 is the clear winner, Overlay 3 is a net drag, and
-combining all three destroys performance.**
+**No overlay adds out-of-sample value; the regime filter subtracts
+most of it.** The filter halves the test max drawdown (−9.1% → −4.4%)
+but at the cost of half the Sharpe, because every exit is one day late
+by necessity — it eats the crash day, then sits out the vol-crush
+recovery days that follow. An earlier revision reported the filter as
+the study's best result (test Sharpe 1.03); that entire improvement
+was the same-day exit leak (revision note #2). The vol-scaling overlay
+is inert (the spread rarely exceeds 10% trailing vol). The tail hedge
+remains a drag even after fixing its double-charged premium: 15% of
+premium buys 5Δ puts that expire worthless in almost every month, and
+the spread's long wing already covers the crash path — redundant
+insurance, purchased monthly. Combining all three stacks three costs
+on one risk.
 
-The VIX regime filter *improves* out-of-sample Sharpe (0.81 → 1.03) and
-cuts maximum drawdown by a factor of three (−8.5% → −2.5%). The cost
-shows up in the training window (Sharpe drops from 1.24 to 0.98) because
-the filter cashes out of otherwise-profitable months whenever VIX probes
-above 30, but the test window contains the COVID regime where the
-filter pays for itself many times over. This is the expected behavior
-for a well-calibrated regime filter.
+The best construction identified by the study is therefore the plain
+**Strategy B put-spread** — every gate and overlay tried on top of it
+reduced out-of-sample performance.
 
-The realized-vol scaling overlay is marginal. Spread + light-gate is
-already a low-vol construction, so the target_vol/rv ratio usually
-exceeds the 1.0× leverage cap and the overlay is inactive. Only in the
-most extreme vol spikes does it downsize, which offers a tiny
-improvement.
+## Phase 5 — Tail-risk analysis
 
-The tail-hedge spend is a *negative*-value overlay in this sample.
-Spending 15% of premium monthly on 5-delta puts is expensive: most
-months the put expires worthless, and the spread's long −0.10Δ leg
-already covers the crash path. The tail hedge adds redundant protection
-that costs more in premium than it saves in drawdown. This lines up
-with AQR's Israelov & Nielsen (2015) critique — naïve OTM-put
-hedging on top of an already-hedged position is systematic return
-erosion, not protection.
+Moving-block bootstrap (Kunsch 1989; block 40, 2000 paths), daily
+VaR/ES, probabilistic Sharpe ratios, an October-1987 extrapolated
+stress test, and block-size / method robustness. All computed on the
+full 2013–2024 sample.
 
-Combining all three is the worst configuration: the regime filter and
-tail hedge protect against the same tail twice (once by cashing out,
-once by being long a far-OTM put), so you pay both costs to hedge one
-risk. Plus the vol-scaling layer triggers more often on the
-tail-hedge-distorted return series, dragging everything further.
+### Bootstrap Sharpe distributions and PSR
 
-**Best configuration identified in Phase 4: Strategy C (spread, thr=−2)
-+ Overlay 1 alone.** Out-of-sample Sharpe 1.03, max drawdown 2.5%,
-active most months. That's the strongest single construction in the
-study, and it now replaces the unadorned gated spread as the input to
-Phase 4's meta-allocation.
+| construction | Sharpe p05 | p50 | p95 | full-sample | PSR |
+|---|---|---|---|---|---|
+| A short-front               | +0.01 | +0.47 | +0.97 | +0.46 | 0.957 |
+| A long-front                | −1.01 | −0.59 | −0.19 | −0.60 | 0.033 |
+| B PUT index                 | +0.18 | +0.69 | +1.40 | +0.67 | 0.990 |
+| **B synth spread**          | **+0.34** | **+0.83** | **+1.35** | **+0.81** | **0.997** |
+| C spread thr=+1             | +0.25 | +0.80 | +1.34 | +0.76 | 0.995 |
+| C spread thr=+1 + O1        | −0.15 | +0.27 | +0.70 | +0.24 | 0.804 |
 
-## Reproduce overlays
-
-```bash
-python scripts/run_strategy_c_overlays.py
-```
-
-## Phase 5 — Tail-Risk Analysis
-
-Three required components from the project spec: moving-block bootstrap
-of returns, October 1987 extrapolated stress test, and an explicit
-disclosure of what the backtest cannot tell us.
-
-### Moving-Block Bootstrap
-
-Method: fixed-size moving-block bootstrap (Kunsch 1989), block size 40
-trading days (middle of the spec's 20-60 range), 2000 simulations per
-construction. Preserves within-block autocorrelation and vol clustering;
-breaks cross-block autocorrelation. Acceptable for monthly-rebalance
-strategies, a lower bound on true tail risk for strategies whose vol
-events cluster beyond 40 trading days.
-
-Bootstrap Sharpe 5/50/95 percentiles, in-sample shown for context:
-
-| construction                    | Sharpe p05 | Sharpe p50 | Sharpe p95 | in-sample |
-|---|---|---|---|---|
-| A short-front (spec baseline)   | −0.86 | −0.65 | −0.42 | −0.67 |
-| A long-front (flipped)          | +0.21 | +0.49 | +0.77 | +0.51 |
-| B PUT index                     | +0.18 | +0.69 | +1.40 | +0.67 |
-| B synth spread                  | +0.38 | +0.86 | +1.40 | +0.86 |
-| C spread thr=−2                 | +0.45 | +1.00 | +1.55 | +0.97 |
-| **C spread thr=−2 + O1**        | **+0.61** | **+1.01** | **+1.46** | **+1.01** |
-
-A short-front is reliably negative across the entire bootstrap
-distribution — even the 95th-percentile Sharpe is still negative. That
-is exactly what "naive dollar-neutral calendar spread has negative
-expected return" looks like when you refuse to let a lucky sample
-rescue it. Every other construction is reliably positive at the 5th
-percentile, and C+O1 has the tightest positive distribution by a
-comfortable margin.
+PSR is the probability the true Sharpe exceeds zero given the sample
+length, skew, and kurtosis (Bailey & López de Prado 2012). The spread
+constructions are statistically credible (PSR ≥ 0.99). A short-front's
+5th percentile sits at zero — twelve years of data cannot rule out
+that its carry is noise. The O1-filtered construction's interval spans
+well into negative territory: the filter converts a credible strategy
+into an incredible one.
 
 ### Daily 1%-VaR and Expected Shortfall
 
-| construction                | 1% VaR (daily) | 1% ES (daily) |
+| construction | 1% VaR (daily) | 1% ES (daily) |
 |---|---|---|
-| A short-front               | −4.65% | −6.22% |
-| A long-front                | −2.45% | −3.86% |
+| A short-front               | −2.74% | −4.05% |
+| A long-front                | −1.81% | −2.21% |
 | B PUT index                 | −2.27% | −3.79% |
 | B synth spread              | −0.88% | −1.14% |
-| C spread thr=−2             | −0.76% | −1.07% |
-| **C spread thr=−2 + O1**    | **−0.51%** | **−0.67%** |
+| C spread thr=+1             | −0.76% | −1.08% |
+| C spread thr=+1 + O1        | −0.56% | −0.75% |
 
-Daily-tail ordering mirrors the bootstrap: A short-front has the
-deepest tail, and each subsequent construction in the study
-progressively tightens it. The regime filter on top of the gated spread
-cuts 1%-VaR roughly in half relative to the ungated spread — it cashes
-out exactly the days that would have been in the left tail.
+The spread's structural wing cuts the daily tail by ~3× versus the
+naked constructions. (The O1 row's small tail is bought with the
+Sharpe destruction documented in Phase 4 — a thin left tail is not by
+itself a recommendation.)
 
-### October 1987 Stress Test
+### Bootstrap robustness (headline C+O1 row)
 
-Scenario (historical record, no tuning): SPX −20.5%, VIX-equivalent +30
-vol points, VX term structure inverts (front +30, second +20). Pre-
-shock levels: front VX=20, second=22, S=100, IV=20%, K_short=95,
-K_long=85, 20 days remaining in the cycle.
+| method | Sharpe p05 | p50 | p95 |
+|---|---|---|---|
+| MBB, block 20 | −0.15 | +0.27 | +0.72 |
+| MBB, block 40 | −0.15 | +0.27 | +0.70 |
+| MBB, block 60 | −0.15 | +0.28 | +0.73 |
+| stationary (Politis-Romano, mean 40) | −0.18 | +0.24 | +0.68 |
 
-Single-day PnL as % of gross capital:
+Conclusions are insensitive to the block-size judgment call and to the
+fixed-vs-random block-length choice.
 
-| construction                | single-day PnL |
+### October 1987 stress test
+
+Scenario (historical record, no tuning): SPX −20.5%, VIX-equivalent
++30 vol points, VX term structure inverts (front +30, second +20).
+Option strikes are the same delta targets the strategies trade
+(−0.30Δ ⇒ K≈96.9, −0.10Δ ⇒ K≈93.3 at S=100, IV=20%, 20 days left).
+
+| construction | single-day PnL (% of capital) |
 |---|---|
 | A short-front               | **−29.5%** |
 | A long-front (mirror gain)  | +29.5% |
-| B synth naked −0.30Δ        | −16.3% |
-| B synth spread              | −8.7% |
-| C spread thr=−2             | −8.7% |
-| C spread + O1               | −8.7% (day 0); O1 cashes out day 1+ |
+| B synth naked −0.30Δ        | −17.6% |
+| B synth spread              | **−3.3%** |
+| C spread thr=+1             | −3.3% |
+| C spread + O1               | −3.3% (day 0); O1 exits day 1+ |
 
-A short-front in the 1987 scenario loses nearly a third of capital in
-a single day — this is not a survivable trade for any scaled allocator.
-The mirror gain on A long-front (+29.5%) is mechanically correct but
-unlikely to be realized in practice because of margin calls and
-exchange risk. B naked loses ~16%; the spread caps the loss at ~9%
-thanks to the long −0.10Δ leg. **On a surprise shock, the regime
-filter does not protect on day 0** — VIX is under 30 the day before a
-black-swan event by definition — so C+O1 takes the same day-0 hit as
-the ungated spread. Its protection kicks in on day 1+ by cashing out
-of any continuing drawdown.
+A short-front loses nearly a third of capital in one day — not a
+survivable event for a scaled allocator, and the number that should be
+read alongside its +0.88 test Sharpe. The naked writer loses ~18%. The
+spread's loss is capped near (K_short − K_long − net premium) by
+construction at −3.3%. An earlier revision reported −8.7% for the
+spread using hardcoded strikes ~4× wider apart than the strategy's
+actual deltas. **On a surprise shock the regime filter provides no
+day-0 protection** — VIX is below 30 the day before a black swan by
+definition — so C+O1 takes the same hit; its exit occurs at the next
+close.
 
 ### Honest limitations
 
-1. **Sample thinness.** The 2013-2024 sample contains at most four
-   major short-vol-blow-up events (2015 flash crash, Feb 2018
-   Volmageddon, March 2020 COVID, 2022 bear). Four realizations is not
-   enough to characterize the true tail. Bootstrap confidence intervals
-   read as in-distribution estimates conditional on the observed
-   sample, not as population statistics.
-2. **1987 extrapolation is approximate.** VIX did not exist in 1987;
-   IV levels are back-fit estimates. Option markets had nothing
-   resembling modern electronic execution — you could not exit short
-   puts at theoretical prices on Oct 19. Treat the single-day PnL
-   figures as lower-bound losses for the short-vol constructions.
-3. **MBB breaks cross-block autocorrelation.** For strategies whose
-   drawdowns cluster beyond 40 trading days (plausible for naive
-   short-vol), the bootstrap understates drawdown-duration risk. A
-   stationary bootstrap with geometric block lengths would handle this
-   more gracefully; not implemented here to keep the Phase 5 scope
-   tight.
-4. **Transaction costs during crises.** Strategy B/C marks option
-   legs at BS theoretical prices. Real-market spreads widen
-   dramatically during vol spikes (the 1987 put market effectively
-   stopped quoting). Live PnL under stress is worse than the BS-mark
-   assumption.
-5. **This strategy is short volatility.** Everything above is a
-   rigorous characterization of *how catastrophically* it will lose
-   money in a vol spike, not a claim of safety. The spread + regime
-   filter combination is the best construction identified in the
-   study, but it is still short-vol and still exposed to the left
-   tail. Treat position sizing accordingly.
+1. **Sample thinness.** 2013–2024 contains at most four major
+   short-vol events (2015, Feb 2018, Mar 2020, 2022) — two per window.
+   Bootstrap intervals are in-distribution statements conditional on
+   this sample, not population statistics. Strategy A's train/test
+   Sharpe gap (+0.07 vs +0.88) is the cleanest illustration: the
+   carry's profitability over any 6-year window is regime luck.
+2. **Spec deviation on the split.** The spec required Feb 2018 in the
+   test set; the 2013 data floor forces it into training. The test set
+   retains COVID 2020 and 2022. A reader should treat train-window
+   drawdown behavior around Feb 2018 as partially "seen" by every
+   train-selected parameter.
+3. **Multiple testing.** Two strategy-A directions, two B variants,
+   ten C thresholds, and three overlays were evaluated; only the
+   train-then-test protocol and the PSR/bootstrap machinery guard
+   against selection bias, and they cannot fully undo it. The
+   defensible claims are the ones that needed no selection: the spread
+   beats the naked writer, and the gates/overlays failed out of sample.
+4. **1987 extrapolation is approximate.** VIX did not exist in 1987;
+   IV levels are back-fit. You could not exit short puts at theoretical
+   prices on Oct 19 — treat the stress figures as lower-bound losses.
+5. **BS marks in crises.** Strategy B/C marks at Black-Scholes
+   theoretical prices; real spreads gap wide exactly when it matters.
+   Live PnL under stress is worse than marked.
+6. **This is short volatility.** The spread + honest accounting is the
+   best construction found, but it is still short the left tail. The
+   analysis quantifies how much premium survives honest tail-risk
+   accounting; it does not make the tail go away.
 
-## Reproduce tail-risk analysis
+## Repository notes
 
-```bash
-python scripts/run_tail_risk.py
-```
-
-## Limitations (Phase 1)
-
-- Dollar-neutral continuous rolling is an approximation of how a real
-  fund would trade this exposure; intraday slippage, contract-size
-  rounding, and margin dynamics make the live path worse than the
-  backtest.
-- VIX is used as an IV proxy in later phases (variance-swap construct,
-  not strictly ATM IV). Flagged in those phases' code.
-- Sample contains ≤4 major vol events in 11 years. Backtests of
-  short-vol strategies systematically underestimate tail risk; the
-  bootstrap and stress-test analyses in Phase 5 are designed to correct
-  for this.
-- CBOE 2013-start truncation removes GFC 2008 from the sample. 2008
-  is the canonical short-vol catastrophe and its absence is a known
-  limitation of this replication.
+- `src/vrp/data/vx_futures.py` builds splice-free held-contract
+  returns; never diff the market-designated `front_settle` column
+  across a roll.
+- All published numbers regenerate from the scripts above; `reports/`
+  is gitignored by design.
