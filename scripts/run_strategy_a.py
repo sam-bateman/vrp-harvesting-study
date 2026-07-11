@@ -38,7 +38,7 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     vx = load_vx_continuous(start=TRAIN_START, end=TEST_END)
-    result = run_strategy_a(vx, roll_days_before_expiry=5, tc_bps_per_roll=1.0)
+    result = run_strategy_a(vx, tc_bps_per_roll=1.0)
     ret = result["daily_return"]
 
     train_ret = ret.loc[TRAIN_START:TRAIN_END]

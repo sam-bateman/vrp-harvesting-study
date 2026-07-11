@@ -12,7 +12,14 @@ import yfinance as yf
 
 from . import cache
 
-_KEY_PREFIX = "spx_daily"
+# v2: `end` is inclusive (yfinance's own end param is exclusive).
+_KEY_PREFIX = "spx_daily_v2"
+
+
+def _inclusive_end(end: str | None) -> str | None:
+    if end is None:
+        return None
+    return (pd.Timestamp(end) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
 
 
 def load_spx(start: str = "2005-01-01", end: str | None = None,
@@ -23,8 +30,8 @@ def load_spx(start: str = "2005-01-01", end: str | None = None,
         if cached is not None:
             return cached
 
-    raw = yf.download("^GSPC", start=start, end=end, auto_adjust=False,
-                      progress=False, group_by="column")
+    raw = yf.download("^GSPC", start=start, end=_inclusive_end(end),
+                      auto_adjust=False, progress=False, group_by="column")
     if isinstance(raw.columns, pd.MultiIndex):
         raw.columns = raw.columns.get_level_values(0)
     df = raw[["Open", "High", "Low", "Close", "Volume"]].rename(

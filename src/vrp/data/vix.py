@@ -8,7 +8,8 @@ import yfinance as yf
 
 from . import cache
 
-_KEY_PREFIX = "vix_spot_daily"
+# v2: `end` is inclusive (yfinance's own end param is exclusive).
+_KEY_PREFIX = "vix_spot_daily_v2"
 
 
 def load_vix(start: str = "2005-01-01", end: str | None = None,
@@ -19,8 +20,9 @@ def load_vix(start: str = "2005-01-01", end: str | None = None,
         if cached is not None:
             return cached["vix"]
 
-    raw = yf.download("^VIX", start=start, end=end, auto_adjust=False,
-                      progress=False, group_by="column")
+    from vrp.data.spx import _inclusive_end
+    raw = yf.download("^VIX", start=start, end=_inclusive_end(end),
+                      auto_adjust=False, progress=False, group_by="column")
     if isinstance(raw.columns, pd.MultiIndex):
         raw.columns = raw.columns.get_level_values(0)
     s = raw["Close"].rename("vix").dropna()
